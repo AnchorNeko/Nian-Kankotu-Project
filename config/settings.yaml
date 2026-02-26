@@ -1,0 +1,47 @@
+architecture_contract_version: "1.0.0"
+
+models:
+  storyboard_text_model: "doubao-seed-2-0-pro-260215"
+  image_model: "doubao-seedream-5-0-260128"
+  video_model: "doubao-seedance-1-5-pro-251215"
+
+render:
+  width: 1280
+  height: 720
+  fps: 24
+
+storyboard:
+  max_shot_duration_sec: 15
+  max_regen_rounds: 3
+
+generation:
+  text_max_retries: 2
+  task_poll_interval_sec: 2
+  task_max_polls: 180
+  request_timeout_sec: 120
+
+style_consistency:
+  base_seed: 20260225
+  guidance_scale: 4.5
+  optimize_prompt: false
+  max_reference_images_per_shot: 6
+  carryover_prev_keyframes: 2
+  prompt_lock_preamble: "Maintain strict cross-shot anime identity and style consistency."
+  retry_on_image_generation_error: 1
+
+consistency_assets:
+  max_main_characters: 4
+  max_backgrounds: 6
+  max_character_refs_per_shot: 2
+  fail_on_missing_design_assets: true
+
+paths:
+  character_sheet_file: "character_sheet.json"
+  background_sheet_file: "background_sheet.json"
+  character_designs_dir: "character_designs"
+  background_designs_dir: "background_designs"
+  storyboard_file: "storyboard.json"
+  keyframes_dir: "keyframes"
+  clips_dir: "clips"
+  final_video_file: "final.mp4"
+  run_manifest_file: "run_manifest.json"

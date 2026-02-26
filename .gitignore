@@ -1,0 +1,30 @@
+# OS and editor
+.DS_Store
+.vscode/
+.idea/
+
+# Python cache and test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local environments and secrets
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Packaging artifacts
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# Runtime outputs and temporary files
+outputs/
+tmp_outline*.txt
