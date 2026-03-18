@@ -2,6 +2,9 @@
 .DS_Store
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
 
 # Python cache and test artifacts
 __pycache__/
@@ -18,13 +21,16 @@ venv/
 .env
 .env.*
 !.env.example
+.python-version
 
 # Packaging artifacts
 build/
 dist/
 *.egg-info/
 pip-wheel-metadata/
+uv.lock
 
 # Runtime outputs and temporary files
 outputs/
+.tmp/
 tmp_outline*.txt
