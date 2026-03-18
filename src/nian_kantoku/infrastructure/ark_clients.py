@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import logging
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from nian_kantoku.application.exceptions import MissingDependencyError, PipelineExecutionError
-from nian_kantoku.domain.models import GeneratedImageReference, VideoTaskStatus
+from nian_kantoku.application.run_models import GeneratedImageReference, VideoTaskStatus
 
 try:
     from volcenginesdkarkruntime import Ark
@@ -33,49 +32,33 @@ def _to_text(content: Any) -> str:
             if isinstance(item, str):
                 chunks.append(item)
             elif isinstance(item, dict):
-                chunks.append(str(item.get("text", "")))
+                part = item.get("text")
+                if isinstance(part, str):
+                    chunks.append(part)
             else:
-                chunks.append(str(getattr(item, "text", "")))
+                part = getattr(item, "text", None)
+                if isinstance(part, str):
+                    chunks.append(part)
         return "".join(chunks)
     if isinstance(content, dict):
-        return str(content.get("text", ""))
-    return str(content)
+        text = content.get("text")
+        return text if isinstance(text, str) else ""
+    text = getattr(content, "text", None)
+    return text if isinstance(text, str) else ""
 
 
-def _iter_nodes(value: Any) -> Iterable[Any]:
-    yield value
-    if isinstance(value, dict):
-        for sub_value in value.values():
-            yield from _iter_nodes(sub_value)
-    elif isinstance(value, list):
-        for sub_value in value:
-            yield from _iter_nodes(sub_value)
-    else:
-        for attr in ("__dict__",):
-            nested = getattr(value, attr, None)
-            if nested:
-                yield from _iter_nodes(nested)
-
-
-def _find_first_url(value: Any) -> Optional[str]:
-    for node in _iter_nodes(value):
-        if isinstance(node, str) and node.startswith("http"):
-            return node
-    return None
-
-
-def _find_duration(value: Any) -> Optional[float]:
-    for node in _iter_nodes(value):
-        if isinstance(node, dict):
-            for key, maybe_value in node.items():
-                if "duration" in str(key).lower() and isinstance(
-                    maybe_value, (int, float)
-                ):
-                    return float(maybe_value)
-        elif hasattr(node, "duration"):
-            maybe_value = getattr(node, "duration", None)
-            if isinstance(maybe_value, (int, float)):
-                return float(maybe_value)
+def _extract_duration(response: Any) -> Optional[float]:
+    candidates = [
+        _dig(response, "duration"),
+        _dig(response, "duration_sec"),
+        _dig(response, "output", "duration"),
+        _dig(response, "output", "duration_sec"),
+        _dig(response, "result", "duration"),
+        _dig(response, "result", "duration_sec"),
+    ]
+    for value in candidates:
+        if isinstance(value, (int, float)):
+            return float(value)
     return None
 
 
@@ -101,30 +84,23 @@ class _ArkAdapterBase:
 
 
 class ArkStoryboardModelAdapter(_ArkAdapterBase):
-    def generate_storyboard(self, *, model: str, prompt: str, timeout_sec: int) -> str:
-        del timeout_sec
+    def generate_storyboard(self, *, model: str, prompt: str) -> str:
         try:
             response = self._client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
             )
         except Exception as exc:  # noqa: BLE001
-            error_text = str(exc)
-            if (
-                "response_format.type" in error_text
-                and "not supported by this model" in error_text
-            ):
-                response = self._client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                )
-            else:
-                raise
-        choices = _dig(response, "choices") or []
-        if not choices:
-            raise PipelineExecutionError("No choices returned from storyboard model")
+            raise PipelineExecutionError(f"Storyboard model request failed: {exc}") from exc
+
+        choices = _dig(response, "choices")
+        if not isinstance(choices, list) or not choices:
+            raise PipelineExecutionError("Storyboard model response missing non-empty choices list")
+
         message = _dig(choices[0], "message")
+        if message is None:
+            raise PipelineExecutionError("Storyboard model response missing message in first choice")
+
         content = _dig(message, "content")
         text = _to_text(content)
         if not text.strip():
@@ -140,19 +116,16 @@ class ArkImageGeneratorAdapter(_ArkAdapterBase):
         prompt: str,
         width: int,
         height: int,
-        timeout_sec: int,
         reference_images: Sequence[str],
         seed: int | None,
         guidance_scale: float | None,
         optimize_prompt: bool | None,
     ) -> GeneratedImageReference:
-        del timeout_sec
-        size = f"{width}x{height}"
         payload: Dict[str, Any] = {
             "model": model,
             "prompt": prompt,
             "response_format": "url",
-            "size": size,
+            "size": f"{width}x{height}",
         }
         if reference_images:
             payload["image"] = list(reference_images)
@@ -163,37 +136,21 @@ class ArkImageGeneratorAdapter(_ArkAdapterBase):
         if optimize_prompt is not None:
             payload["optimize_prompt"] = optimize_prompt
 
-        response = self._generate_image_with_fallback(payload=payload)
-        data = _dig(response, "data") or []
-        if not data:
-            raise PipelineExecutionError("Image model returned empty data list")
+        try:
+            response = self._client.images.generate(**payload)
+        except Exception as exc:  # noqa: BLE001
+            raise PipelineExecutionError(f"Image generation request failed: {exc}") from exc
+
+        data = _dig(response, "data")
+        if not isinstance(data, list) or not data:
+            raise PipelineExecutionError("Image model response missing non-empty data list")
 
         first = data[0]
         image_url = _dig(first, "url") or _dig(first, "image_url")
-        if not image_url:
-            image_url = _find_first_url(first)
+        if not isinstance(image_url, str) or not image_url.strip():
+            raise PipelineExecutionError("Image model response missing image URL in first data item")
 
-        if not image_url:
-            raise PipelineExecutionError("Image model response does not include an image URL")
-        return GeneratedImageReference(image_url=str(image_url))
-
-    def _generate_image_with_fallback(self, *, payload: Dict[str, Any]) -> Any:
-        fallback_order = ["image", "guidance_scale", "seed", "optimize_prompt"]
-        logger = logging.getLogger("nian_kantoku.run")
-        while True:
-            try:
-                return self._client.images.generate(**payload)
-            except Exception as exc:  # noqa: BLE001
-                if not _should_retry_image_with_fallback(exc):
-                    raise
-                removed = _pop_next_optional_param(payload=payload, fallback_order=fallback_order)
-                if removed is None:
-                    raise
-                logger.warning(
-                    "Image generation fallback activated, removed parameter '%s': %s",
-                    removed,
-                    exc,
-                )
+        return GeneratedImageReference(image_url=image_url)
 
 
 class ArkVideoGeneratorAdapter(_ArkAdapterBase):
@@ -203,96 +160,66 @@ class ArkVideoGeneratorAdapter(_ArkAdapterBase):
         model: str,
         prompt: str,
         image_url: str,
-        duration_sec: float,
-        width: int,
-        height: int,
-        fps: int,
-        timeout_sec: int,
     ) -> str:
-        del duration_sec, width, height, fps, timeout_sec
-
-        response = self._client.content_generation.tasks.create(
-            model=model,
-            content=[
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": image_url}},
-            ],
-        )
+        try:
+            response = self._client.content_generation.tasks.create(
+                model=model,
+                content=[
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                ],
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise PipelineExecutionError(f"Video task creation request failed: {exc}") from exc
 
         task_id = _dig(response, "id") or _dig(response, "task_id")
-        if not task_id:
-            task_id = _find_first_task_id(response)
+        if not isinstance(task_id, str) or not task_id.strip():
+            raise PipelineExecutionError("Video task creation response missing task id")
+        return task_id
 
-        if not task_id:
-            raise PipelineExecutionError("Video task creation response has no task id")
-        return str(task_id)
+    def get_video_task_status(self, *, task_id: str) -> VideoTaskStatus:
+        try:
+            response = self._client.content_generation.tasks.get(task_id=task_id)
+        except Exception as exc:  # noqa: BLE001
+            raise PipelineExecutionError(f"Video task status request failed: {exc}") from exc
 
-    def get_video_task_status(self, *, task_id: str, timeout_sec: int) -> VideoTaskStatus:
-        del timeout_sec
-        response = self._client.content_generation.tasks.get(task_id=task_id)
+        raw_status = _dig(response, "status") or _dig(response, "task_status") or _dig(response, "state")
+        if not isinstance(raw_status, str) or not raw_status.strip():
+            raise PipelineExecutionError(
+                f"Video task status response missing status string for task_id={task_id}"
+            )
 
-        status = (
-            _dig(response, "status")
-            or _dig(response, "task_status")
-            or _dig(response, "state")
-            or "unknown"
-        )
-
-        video_url = (
+        raw_video_url = (
             _dig(response, "video_url")
+            or _dig(response, "content", "video_url")
             or _dig(response, "output", "video_url")
             or _dig(response, "result", "video_url")
         )
-        if not video_url:
-            video_url = _find_first_url(response)
+        video_url: Optional[str]
+        if raw_video_url is None:
+            video_url = None
+        elif isinstance(raw_video_url, str) and raw_video_url.strip():
+            video_url = raw_video_url
+        else:
+            raise PipelineExecutionError(
+                f"Video task status response has invalid video_url type for task_id={task_id}"
+            )
 
-        error_message = (
-            _dig(response, "error", "message")
-            or _dig(response, "message")
-            or _dig(response, "error_message")
-        )
+        raw_error_message = _dig(response, "error", "message") or _dig(response, "error_message")
+        error_message: Optional[str]
+        if raw_error_message is None:
+            error_message = None
+        elif isinstance(raw_error_message, str):
+            error_message = raw_error_message
+        else:
+            raise PipelineExecutionError(
+                f"Video task status response has invalid error_message type for task_id={task_id}"
+            )
 
         return VideoTaskStatus(
             task_id=task_id,
-            status=str(status),
-            video_url=str(video_url) if video_url else None,
-            error_message=str(error_message) if error_message else None,
-            actual_duration_sec=_find_duration(response),
+            status=raw_status,
+            video_url=video_url,
+            error_message=error_message,
+            actual_duration_sec=_extract_duration(response),
         )
-
-
-def _find_first_task_id(value: Any) -> Optional[str]:
-    for node in _iter_nodes(value):
-        if isinstance(node, dict):
-            for key, maybe_value in node.items():
-                if str(key).lower() in {"task_id", "id"} and isinstance(maybe_value, str):
-                    return maybe_value
-        else:
-            for attr in ("task_id", "id"):
-                maybe_value = getattr(node, attr, None)
-                if isinstance(maybe_value, str):
-                    return maybe_value
-    return None
-
-
-def _should_retry_image_with_fallback(exc: Exception) -> bool:
-    text = str(exc).lower()
-    indicators = (
-        "not support",
-        "unsupported",
-        "unknown",
-        "invalid",
-        "unrecognized",
-        "unexpected field",
-        "unexpected argument",
-        "bad request",
-    )
-    return any(item in text for item in indicators)
-
-
-def _pop_next_optional_param(*, payload: Dict[str, Any], fallback_order: Sequence[str]) -> Optional[str]:
-    for key in fallback_order:
-        if key in payload:
-            payload.pop(key)
-            return key
-    return None

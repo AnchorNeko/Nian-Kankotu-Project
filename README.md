@@ -43,6 +43,7 @@ nian-kantoku run \
   - `keyframes/`
   - `clips/`
   - `run_manifest.json`
+  - `shot_diagnostics.jsonl`
   - `final.mp4`（全部镜头成功时生成）
 
 ## 常用开发命令

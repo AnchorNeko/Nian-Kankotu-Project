@@ -4,6 +4,7 @@
 1. Application layer can depend only on domain and ports.
 2. Infrastructure layer can depend on SDK/system tools but must implement application ports.
 3. Interface layer (CLI) must not call SDK directly; call application use cases only.
+4. Runtime/artifact DTOs belong to application layer; domain keeps only business semantics.
 
 ## Policy Rules
 1. For storyboard output with shots over 15 seconds, run regeneration of offending shots; do not fail immediately.
@@ -17,5 +18,6 @@
 9. Keyframe generation must enforce cross-shot style consistency using global style lock + shot-related character/background anchors.
 10. Reference anchor priority is fixed: shot-related character/background design assets, then user references, then previous successful keyframes.
 11. Replace repeated special-case branching with policy/strategy abstractions.
-12. Persist per-shot prompt diagnostics (image/video prompts plus injected consistency context and key parameters) into run artifacts and expose them in CLI user output.
+12. Persist per-shot prompt diagnostics into `shot_diagnostics.jsonl` and expose them in CLI user output.
 13. CLI must present runtime progress via dashboard-oriented rendering, while raw logs stay in artifacts.
+14. Ark adapters must parse responses with strict field checks; no implicit compatibility fallback.

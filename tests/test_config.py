@@ -21,11 +21,13 @@ def test_load_config_success(monkeypatch: pytest.MonkeyPatch, config_path: Path)
     assert config.storyboard.max_regen_rounds == 3
     assert config.render.fps == 24
     assert config.style_consistency.base_seed == 20260225
+    assert config.style_consistency.guidance_scale is None
     assert config.style_consistency.optimize_prompt is False
     assert config.consistency_assets.max_main_characters == 4
     assert config.consistency_assets.fail_on_missing_design_assets is True
     assert config.paths.character_sheet_file == "character_sheet.json"
     assert config.paths.background_designs_dir == "background_designs"
+    assert config.paths.shot_diagnostics_file == "shot_diagnostics.jsonl"
 
 
 def test_load_config_missing_api_key(
@@ -45,7 +47,7 @@ def test_load_config_requires_style_consistency_block(
     broken_config = tmp_path / "broken.yaml"
     broken_config.write_text(
         """
-architecture_contract_version: "1.0.0"
+architecture_contract_version: "2.0.0"
 models:
   storyboard_text_model: "a"
   image_model: "b"
@@ -63,7 +65,12 @@ generation:
   task_max_polls: 10
   request_timeout_sec: 60
 paths:
+  character_sheet_file: "character_sheet.json"
+  background_sheet_file: "background_sheet.json"
+  character_designs_dir: "character_designs"
+  background_designs_dir: "background_designs"
   storyboard_file: "storyboard.json"
+  shot_diagnostics_file: "shot_diagnostics.jsonl"
   keyframes_dir: "keyframes"
   clips_dir: "clips"
   final_video_file: "final.mp4"

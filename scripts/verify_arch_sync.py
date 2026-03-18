@@ -83,6 +83,10 @@ def main() -> int:
         "shot_related_character_background_designs_plus_user_refs_plus_previous_successful_keyframe"
     ):
         errors.append("Policy mismatch: style_anchor_strategy must include shot-related design anchors")
+    if policy.get("diagnostics_storage") != "shot_diagnostics_jsonl":
+        errors.append("Policy mismatch: diagnostics_storage must be shot_diagnostics_jsonl")
+    if policy.get("adapter_fallback_policy") != "strict_no_implicit_fallback":
+        errors.append("Policy mismatch: adapter_fallback_policy must be strict_no_implicit_fallback")
 
     consistency_assets = config.get("consistency_assets")
     if not isinstance(consistency_assets, dict):
@@ -106,9 +110,20 @@ def main() -> int:
             "background_sheet_file",
             "character_designs_dir",
             "background_designs_dir",
+            "storyboard_file",
+            "shot_diagnostics_file",
+            "keyframes_dir",
+            "clips_dir",
+            "final_video_file",
+            "run_manifest_file",
         ):
             if required_key not in paths:
                 errors.append(f"Config key missing: paths.{required_key}")
+
+    for removed_file in ("settings.run.yaml", "settings.runtime.yaml"):
+        removed_path = ROOT / "config" / removed_file
+        if removed_path.exists():
+            errors.append(f"Obsolete config profile must be removed: config/{removed_file}")
 
     prompt_text = prompt_file.read_text(encoding="utf-8")
     if "duration_sec <=" not in prompt_text:

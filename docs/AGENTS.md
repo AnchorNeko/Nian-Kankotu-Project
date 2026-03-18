@@ -10,6 +10,6 @@
    - Shot-failure continuation and partial-failure boundaries.
    - Runtime observability outputs (`run.log`, `events.jsonl`) and CLI exit semantics.
    - User-facing CLI progress dashboard behavior (no raw log-line streaming to users).
-   - Prompt diagnostics outputs (effective keyframe/video prompts + injected character/background context + key generation parameters) in logs and CLI.
-   - Style consistency requirements, reference-anchor strategy, and style diagnostics outputs.
+   - Prompt diagnostics outputs in `shot_diagnostics.jsonl` and CLI.
+   - Style consistency requirements, reference-anchor strategy, and strict adapter fallback policy.
 4. Do not ship code changes that are not represented in architecture docs.

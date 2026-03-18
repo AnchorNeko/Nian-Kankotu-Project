@@ -3,12 +3,12 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Sequence
 
 import requests
 
 from nian_kantoku.application.exceptions import PipelineExecutionError
-from nian_kantoku.domain.models import AssetLayout
+from nian_kantoku.application.run_models import AssetLayout
 
 
 class LocalAssetStore:
@@ -21,6 +21,7 @@ class LocalAssetStore:
         character_designs_dir_name: str,
         background_designs_dir_name: str,
         storyboard_file_name: str,
+        shot_diagnostics_file_name: str,
         keyframes_dir_name: str,
         clips_dir_name: str,
         final_video_file_name: str,
@@ -45,6 +46,7 @@ class LocalAssetStore:
             character_sheet_file=output_dir / character_sheet_file_name,
             background_sheet_file=output_dir / background_sheet_file_name,
             storyboard_file=output_dir / storyboard_file_name,
+            shot_diagnostics_file=output_dir / shot_diagnostics_file_name,
             final_video_file=output_dir / final_video_file_name,
             manifest_file=output_dir / run_manifest_file_name,
         )
@@ -60,6 +62,13 @@ class LocalAssetStore:
             json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+
+    def write_jsonl(self, *, file_path: Path, payloads: Sequence[Dict]) -> None:
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        with file_path.open("w", encoding="utf-8") as handle:
+            for payload in payloads:
+                handle.write(json.dumps(payload, ensure_ascii=False))
+                handle.write("\n")
 
     def download_file(self, *, source_url: str, destination: Path, timeout_sec: int) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)

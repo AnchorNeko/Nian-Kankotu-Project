@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import json
-import re
 from typing import Iterable, List, Sequence
 
 from nian_kantoku.application.exceptions import StoryboardParseError
+from nian_kantoku.application.json_utils import parse_json_object
 from nian_kantoku.domain.models import (
     OffendingShot,
     Shot,
@@ -13,34 +12,11 @@ from nian_kantoku.domain.models import (
 )
 
 
-def _extract_json_text(raw_text: str) -> str:
-    raw_text = raw_text.strip()
-    if not raw_text:
-        raise StoryboardParseError("Empty model output")
-
-    code_fence_match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", raw_text, re.DOTALL)
-    if code_fence_match:
-        return code_fence_match.group(1)
-
-    if raw_text.startswith("{") and raw_text.endswith("}"):
-        return raw_text
-
-    first = raw_text.find("{")
-    last = raw_text.rfind("}")
-    if first == -1 or last == -1 or first >= last:
-        raise StoryboardParseError("Model output does not contain a valid JSON object")
-    return raw_text[first : last + 1]
-
-
 def parse_storyboard(raw_text: str) -> Storyboard:
-    json_text = _extract_json_text(raw_text)
     try:
-        payload = json.loads(json_text)
-    except json.JSONDecodeError as exc:
-        raise StoryboardParseError(f"Invalid storyboard JSON: {exc}") from exc
-
-    if not isinstance(payload, dict):
-        raise StoryboardParseError("Storyboard payload must be a JSON object")
+        payload = parse_json_object(raw_text)
+    except ValueError as exc:
+        raise StoryboardParseError(str(exc)) from exc
 
     storyboard = Storyboard.from_dict(payload)
     _assert_unique_shot_ids(storyboard.shots)

@@ -240,7 +240,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
         if manifest.run_status == "partial_failed":
-            failed_ids = ", ".join(item.shot_id for item in manifest.failed_records) or "unknown"
+            failed_ids = ", ".join(manifest.failed_shot_ids) or "unknown"
             summary = (
                 "[Nian-Kantoku Partial Failure] "
                 f"succeeded={manifest.succeeded_shots}, failed={manifest.failed_shots}, "

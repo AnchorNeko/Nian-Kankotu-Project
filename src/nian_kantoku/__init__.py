@@ -1,3 +1,3 @@
 """Nian Kantoku package."""
 
-ARCH_CONTRACT_VERSION = "1.0.0"
+ARCH_CONTRACT_VERSION = "2.0.0"

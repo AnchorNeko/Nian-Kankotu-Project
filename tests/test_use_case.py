@@ -17,19 +17,19 @@ from nian_kantoku.application.config import (
     StoryboardConfig,
 )
 from nian_kantoku.application.exceptions import PipelineExecutionError
+from nian_kantoku.application.run_models import AssetLayout, GeneratedImageReference, VideoTaskStatus
 from nian_kantoku.application.use_cases import (
     GenerateAnimeVideoRequest,
     GenerateAnimeVideoUseCase,
 )
-from nian_kantoku.domain.models import AssetLayout, GeneratedImageReference, VideoTaskStatus
 
 
 class FakeStoryboardModel:
     def __init__(self):
         self.call_count = 0
 
-    def generate_storyboard(self, *, model: str, prompt: str, timeout_sec: int) -> str:
-        del model, timeout_sec
+    def generate_storyboard(self, *, model: str, prompt: str) -> str:
+        del model
         self.call_count += 1
 
         if self.call_count == 1:
@@ -143,13 +143,12 @@ class FakeImageGenerator:
         prompt: str,
         width: int,
         height: int,
-        timeout_sec: int,
         reference_images: list[str],
         seed: int | None,
         guidance_scale: float | None,
         optimize_prompt: bool | None,
     ) -> GeneratedImageReference:
-        del model, width, height, timeout_sec, reference_images, seed, guidance_scale, optimize_prompt
+        del model, width, height, reference_images, seed, guidance_scale, optimize_prompt
         self.prompts.append(prompt)
         return GeneratedImageReference(image_url=f"file://{self.image_path}")
 
@@ -162,13 +161,12 @@ class FailingCharacterDesignImageGenerator(FakeImageGenerator):
         prompt: str,
         width: int,
         height: int,
-        timeout_sec: int,
         reference_images: list[str],
         seed: int | None,
         guidance_scale: float | None,
         optimize_prompt: bool | None,
     ) -> GeneratedImageReference:
-        del model, width, height, timeout_sec, reference_images, seed, guidance_scale, optimize_prompt
+        del model, width, height, reference_images, seed, guidance_scale, optimize_prompt
         if "Character ID: character_001" in prompt:
             raise RuntimeError("simulated character design failure")
         return GeneratedImageReference(image_url=f"file://{self.image_path}")
@@ -186,20 +184,14 @@ class FakeVideoGenerator:
         model: str,
         prompt: str,
         image_url: str,
-        duration_sec: float,
-        width: int,
-        height: int,
-        fps: int,
-        timeout_sec: int,
     ) -> str:
-        del model, prompt, image_url, duration_sec, width, height, fps, timeout_sec
+        del model, prompt, image_url
         task_id = f"task_{self._next}"
         self._tasks[task_id] = self._next
         self._next += 1
         return task_id
 
-    def get_video_task_status(self, *, task_id: str, timeout_sec: int) -> VideoTaskStatus:
-        del timeout_sec
+    def get_video_task_status(self, *, task_id: str) -> VideoTaskStatus:
         index = self._tasks[task_id]
         clip_path = self.clip_paths[index]
         return VideoTaskStatus(
@@ -211,8 +203,7 @@ class FakeVideoGenerator:
 
 
 class PartialFailVideoGenerator(FakeVideoGenerator):
-    def get_video_task_status(self, *, task_id: str, timeout_sec: int) -> VideoTaskStatus:
-        del timeout_sec
+    def get_video_task_status(self, *, task_id: str) -> VideoTaskStatus:
         index = self._tasks[task_id]
         if index == 1:
             return VideoTaskStatus(
@@ -239,6 +230,7 @@ class FakeAssetStore:
         character_designs_dir_name: str,
         background_designs_dir_name: str,
         storyboard_file_name: str,
+        shot_diagnostics_file_name: str,
         keyframes_dir_name: str,
         clips_dir_name: str,
         final_video_file_name: str,
@@ -262,6 +254,7 @@ class FakeAssetStore:
             character_sheet_file=output_dir / character_sheet_file_name,
             background_sheet_file=output_dir / background_sheet_file_name,
             storyboard_file=output_dir / storyboard_file_name,
+            shot_diagnostics_file=output_dir / shot_diagnostics_file_name,
             final_video_file=output_dir / final_video_file_name,
             manifest_file=output_dir / run_manifest_file_name,
         )
@@ -271,6 +264,10 @@ class FakeAssetStore:
 
     def write_json(self, *, file_path: Path, payload: dict) -> None:
         file_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    def write_jsonl(self, *, file_path: Path, payloads: list[dict]) -> None:
+        lines = [json.dumps(item) for item in payloads]
+        file_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
     def download_file(self, *, source_url: str, destination: Path, timeout_sec: int) -> None:
         del timeout_sec
@@ -299,7 +296,7 @@ class FakeRuntimeDependency:
 
 def _build_config() -> AppConfig:
     return AppConfig(
-        architecture_contract_version="1.0.0",
+        architecture_contract_version="2.0.0",
         ark_api_key="dummy",
         models=ModelsConfig(
             storyboard_text_model="text-model",
@@ -335,6 +332,7 @@ def _build_config() -> AppConfig:
             character_designs_dir="character_designs",
             background_designs_dir="background_designs",
             storyboard_file="storyboard.json",
+            shot_diagnostics_file="shot_diagnostics.jsonl",
             keyframes_dir="keyframes",
             clips_dir="clips",
             final_video_file="final.mp4",
@@ -354,6 +352,7 @@ def test_use_case_regenerates_overlong_shots_and_completes(tmp_path: Path) -> No
     clip1.write_bytes(b"clip1")
     clip2.write_bytes(b"clip2")
 
+    output_dir = tmp_path / "output"
     use_case = GenerateAnimeVideoUseCase(
         config=_build_config(),
         storyboard_model=FakeStoryboardModel(),
@@ -365,7 +364,7 @@ def test_use_case_regenerates_overlong_shots_and_completes(tmp_path: Path) -> No
     )
 
     manifest = use_case.execute(
-        GenerateAnimeVideoRequest(outline_file=outline_file, output_dir=tmp_path / "output")
+        GenerateAnimeVideoRequest(outline_file=outline_file, output_dir=output_dir)
     )
 
     assert manifest.storyboard_regen_rounds == 1
@@ -373,24 +372,23 @@ def test_use_case_regenerates_overlong_shots_and_completes(tmp_path: Path) -> No
     assert manifest.total_shots == 2
     assert manifest.succeeded_shots == 2
     assert manifest.failed_shots == 0
-    assert manifest.failed_records == []
-    assert len(manifest.records) == 2
-    assert len(manifest.character_designs) == 2
-    assert len(manifest.background_designs) == 1
-    assert manifest.records[0].character_ids == ["character_001", "character_002"]
-    assert manifest.records[0].background_id == "background_001"
-    assert "character_design:character_001" in manifest.records[0].consistency_references_used
-    assert "background_design:background_001" in manifest.records[0].consistency_references_used
-    assert "previous_keyframe_shot_001" in manifest.records[1].consistency_references_used
-    assert len(manifest.shot_diagnostics) == 2
-    assert manifest.shot_diagnostics[0].status == "succeeded"
-    assert manifest.shot_diagnostics[0].effective_image_prompt
-    assert manifest.shot_diagnostics[0].effective_video_prompt
-    assert manifest.merged_video_path == str(tmp_path / "output" / "final.mp4")
-    assert (tmp_path / "output" / "character_sheet.json").exists()
-    assert (tmp_path / "output" / "background_sheet.json").exists()
-    assert (tmp_path / "output" / "character_designs" / "character_001.png").exists()
-    assert (tmp_path / "output" / "background_designs" / "background_001.png").exists()
+    assert manifest.failed_shot_ids == []
+    assert manifest.character_design_summary.total == 2
+    assert manifest.background_design_summary.total == 1
+    assert manifest.merged_video_path == str(output_dir / "final.mp4")
+    assert (output_dir / "character_sheet.json").exists()
+    assert (output_dir / "background_sheet.json").exists()
+    assert (output_dir / "character_designs" / "character_001.png").exists()
+    assert (output_dir / "background_designs" / "background_001.png").exists()
+    assert (output_dir / "shot_diagnostics.jsonl").exists()
+    assert not (output_dir / "style_anchor_manifest.json").exists()
+
+    diagnostics_lines = (output_dir / "shot_diagnostics.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    assert len(diagnostics_lines) == 2
+    first = json.loads(diagnostics_lines[0])
+    assert first["status"] == "succeeded"
+    assert first["effective_image_prompt"]
+    assert first["effective_video_prompt"]
 
 
 def test_use_case_continues_after_shot_failure_and_skips_merge(tmp_path: Path) -> None:
@@ -423,19 +421,19 @@ def test_use_case_continues_after_shot_failure_and_skips_merge(tmp_path: Path) -
     assert manifest.total_shots == 2
     assert manifest.succeeded_shots == 1
     assert manifest.failed_shots == 1
-    assert len(manifest.records) == 1
-    assert len(manifest.shot_diagnostics) == 2
-    assert len(manifest.failed_records) == 1
-    assert manifest.failed_records[0].shot_id == "shot_002"
-    assert manifest.failed_records[0].stage == "video_task_poll"
-    assert manifest.shot_diagnostics[1].status == "failed"
-    assert manifest.shot_diagnostics[1].failed_stage == "video_task_poll"
-    assert manifest.shot_diagnostics[1].character_ids == ["character_001"]
-    assert manifest.shot_diagnostics[1].background_id == "background_001"
+    assert manifest.failed_shot_ids == ["shot_002"]
     assert manifest.merged_video_path == ""
     assert not (output_dir / "final.mp4").exists()
     assert (output_dir / "run_manifest.json").exists()
-    assert (output_dir / "style_anchor_manifest.json").exists()
+    assert (output_dir / "shot_diagnostics.jsonl").exists()
+
+    diagnostics_lines = (output_dir / "shot_diagnostics.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    assert len(diagnostics_lines) == 2
+    second = json.loads(diagnostics_lines[1])
+    assert second["status"] == "failed"
+    assert second["failed_stage"] == "video_task_poll"
+    assert second["character_ids"] == ["character_001"]
+    assert second["background_id"] == "background_001"
 
 
 def test_use_case_fails_fast_when_required_character_design_missing(tmp_path: Path) -> None:

@@ -42,7 +42,7 @@ class GenerationConfig:
 @dataclass(frozen=True)
 class StyleConsistencyConfig:
     base_seed: int
-    guidance_scale: float
+    guidance_scale: float | None
     optimize_prompt: bool
     max_reference_images_per_shot: int
     carryover_prev_keyframes: int
@@ -57,6 +57,7 @@ class PathsConfig:
     character_designs_dir: str
     background_designs_dir: str
     storyboard_file: str
+    shot_diagnostics_file: str
     keyframes_dir: str
     clips_dir: str
     final_video_file: str
@@ -113,6 +114,15 @@ def _coerce_bool(value: Any, *, key: str) -> bool:
     raise ConfigError(f"Config key '{key}' must be a boolean")
 
 
+def _coerce_optional_float(value: Any, *, key: str) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"Config key '{key}' must be a float or null") from exc
+
+
 def load_config(config_path: Path) -> AppConfig:
     if not config_path.exists():
         raise ConfigError(f"Config file not found: {config_path}")
@@ -165,7 +175,10 @@ def load_config(config_path: Path) -> AppConfig:
         ),
         style_consistency=StyleConsistencyConfig(
             base_seed=int(style_consistency["base_seed"]),
-            guidance_scale=float(style_consistency["guidance_scale"]),
+            guidance_scale=_coerce_optional_float(
+                style_consistency["guidance_scale"],
+                key="style_consistency.guidance_scale",
+            ),
             optimize_prompt=_coerce_bool(
                 style_consistency["optimize_prompt"],
                 key="style_consistency.optimize_prompt",
@@ -196,6 +209,7 @@ def load_config(config_path: Path) -> AppConfig:
             character_designs_dir=str(paths["character_designs_dir"]),
             background_designs_dir=str(paths["background_designs_dir"]),
             storyboard_file=str(paths["storyboard_file"]),
+            shot_diagnostics_file=str(paths["shot_diagnostics_file"]),
             keyframes_dir=str(paths["keyframes_dir"]),
             clips_dir=str(paths["clips_dir"]),
             final_video_file=str(paths["final_video_file"]),

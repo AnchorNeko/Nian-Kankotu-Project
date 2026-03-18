@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
+from nian_kantoku.application.exceptions import PipelineExecutionError
 from nian_kantoku.infrastructure.ark_clients import (
     ArkImageGeneratorAdapter,
     ArkStoryboardModelAdapter,
@@ -16,32 +19,16 @@ class _FakeChatCompletions:
             choices=[
                 SimpleNamespace(
                     message=SimpleNamespace(
-                        content='{"shots": [{"shot_id": "shot_001", "duration_sec": 5, "story_beat": "x", "camera_instruction": "y", "image_prompt": "z", "video_prompt": "v"}]}'
+                        content='{"shots": [{"shot_id": "shot_001", "duration_sec": 5, "story_beat": "x", "camera_instruction": "y", "image_prompt": "z", "video_prompt": "v", "character_ids": ["character_001"], "background_id": "background_001"}], "backgrounds": [{"background_id": "background_001", "display_name": "street", "location_description": "street", "visual_constraints": "warm", "design_prompt": "street prompt"}]}'
                     )
                 )
             ]
         )
 
 
-class _FallbackChatCompletions:
-    def __init__(self):
-        self.calls = []
-
+class _FailingChatCompletions:
     def create(self, **kwargs):
-        self.calls.append(kwargs)
-        if "response_format" in kwargs:
-            raise Exception(  # noqa: BLE001
-                "response_format.type is not supported by this model"
-            )
-        return SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(
-                        content='{\"shots\": [{\"shot_id\": \"shot_001\", \"duration_sec\": 5, \"story_beat\": \"x\", \"camera_instruction\": \"y\", \"image_prompt\": \"z\", \"video_prompt\": \"v\"}]}'
-                    )
-                )
-            ]
-        )
+        raise Exception("upstream request failed")  # noqa: BLE001
 
 
 class _FakeImages:
@@ -54,15 +41,10 @@ class _FakeImages:
         return SimpleNamespace(data=[SimpleNamespace(url="http://example.com/image.png")])
 
 
-class _FallbackImages:
-    def __init__(self):
-        self.calls = []
-
+class _InvalidImages:
     def generate(self, **kwargs):
-        self.calls.append(kwargs)
-        if "image" in kwargs:
-            raise Exception("unsupported parameter: image")  # noqa: BLE001
-        return SimpleNamespace(data=[SimpleNamespace(url="http://example.com/image.png")])
+        del kwargs
+        return SimpleNamespace(data=[SimpleNamespace()])
 
 
 class _FakeTaskAPI:
@@ -74,9 +56,24 @@ class _FakeTaskAPI:
         return SimpleNamespace(task_id="task_123")
 
     def get(self, **kwargs):
+        del kwargs
         return SimpleNamespace(
             status="succeeded",
             result=SimpleNamespace(video_url="http://example.com/clip.mp4", duration=22.5),
+        )
+
+
+class _FakeTaskAPIWithContentVideo:
+    def create(self, **kwargs):
+        del kwargs
+        return SimpleNamespace(task_id="task_456")
+
+    def get(self, **kwargs):
+        del kwargs
+        return SimpleNamespace(
+            status="succeeded",
+            content=SimpleNamespace(video_url="http://example.com/content_clip.mp4"),
+            duration=5,
         )
 
 
@@ -91,23 +88,20 @@ def test_storyboard_adapter_request_shape() -> None:
     client = _FakeClient()
     adapter = ArkStoryboardModelAdapter(api_key="x", request_timeout_sec=1, client=client)
 
-    result = adapter.generate_storyboard(model="m", prompt="p", timeout_sec=1)
+    result = adapter.generate_storyboard(model="m", prompt="p")
 
     assert "shots" in result
-    assert client.chat.completions.kwargs["response_format"]["type"] == "json_object"
+    assert client.chat.completions.kwargs["model"] == "m"
+    assert client.chat.completions.kwargs["messages"][0]["content"] == "p"
 
 
-def test_storyboard_adapter_falls_back_when_json_object_unsupported() -> None:
+def test_storyboard_adapter_fails_when_upstream_error() -> None:
     client = _FakeClient()
-    client.chat = SimpleNamespace(completions=_FallbackChatCompletions())
+    client.chat = SimpleNamespace(completions=_FailingChatCompletions())
     adapter = ArkStoryboardModelAdapter(api_key="x", request_timeout_sec=1, client=client)
 
-    result = adapter.generate_storyboard(model="m", prompt="p", timeout_sec=1)
-
-    assert "shots" in result
-    assert len(client.chat.completions.calls) == 2
-    assert "response_format" in client.chat.completions.calls[0]
-    assert "response_format" not in client.chat.completions.calls[1]
+    with pytest.raises(PipelineExecutionError):
+        adapter.generate_storyboard(model="m", prompt="p")
 
 
 def test_image_adapter_request_shape() -> None:
@@ -119,7 +113,6 @@ def test_image_adapter_request_shape() -> None:
         prompt="p",
         width=1280,
         height=720,
-        timeout_sec=1,
         reference_images=["data:image/png;base64,abc"],
         seed=7,
         guidance_scale=4.5,
@@ -133,27 +126,22 @@ def test_image_adapter_request_shape() -> None:
     assert client.images.kwargs["image"] == ["data:image/png;base64,abc"]
 
 
-def test_image_adapter_fallback_removes_unsupported_optional_params() -> None:
+def test_image_adapter_fails_when_response_missing_url() -> None:
     client = _FakeClient()
-    client.images = _FallbackImages()
+    client.images = _InvalidImages()
     adapter = ArkImageGeneratorAdapter(api_key="x", request_timeout_sec=1, client=client)
 
-    image = adapter.generate_image(
-        model="m",
-        prompt="p",
-        width=1280,
-        height=720,
-        timeout_sec=1,
-        reference_images=["data:image/png;base64,abc"],
-        seed=7,
-        guidance_scale=4.5,
-        optimize_prompt=False,
-    )
-
-    assert image.image_url == "http://example.com/image.png"
-    assert len(client.images.calls) >= 2
-    assert "image" in client.images.calls[0]
-    assert "image" not in client.images.calls[-1]
+    with pytest.raises(PipelineExecutionError):
+        adapter.generate_image(
+            model="m",
+            prompt="p",
+            width=1280,
+            height=720,
+            reference_images=["data:image/png;base64,abc"],
+            seed=7,
+            guidance_scale=4.5,
+            optimize_prompt=False,
+        )
 
 
 def test_video_adapter_task_lifecycle_mapping() -> None:
@@ -164,15 +152,27 @@ def test_video_adapter_task_lifecycle_mapping() -> None:
         model="video-model",
         prompt="shot prompt",
         image_url="http://example.com/image.png",
-        duration_sec=7,
-        width=1280,
-        height=720,
-        fps=24,
-        timeout_sec=1,
     )
-    status = adapter.get_video_task_status(task_id=task_id, timeout_sec=1)
+    status = adapter.get_video_task_status(task_id=task_id)
 
     assert task_id == "task_123"
     assert status.status == "succeeded"
     assert status.video_url == "http://example.com/clip.mp4"
     assert client.content_generation.tasks.create_kwargs["content"][0]["type"] == "text"
+
+
+def test_video_adapter_reads_video_url_from_content_block() -> None:
+    client = _FakeClient()
+    client.content_generation = SimpleNamespace(tasks=_FakeTaskAPIWithContentVideo())
+    adapter = ArkVideoGeneratorAdapter(api_key="x", request_timeout_sec=1, client=client)
+
+    task_id = adapter.create_video_task(
+        model="video-model",
+        prompt="shot prompt",
+        image_url="http://example.com/image.png",
+    )
+    status = adapter.get_video_task_status(task_id=task_id)
+
+    assert task_id == "task_456"
+    assert status.status == "succeeded"
+    assert status.video_url == "http://example.com/content_clip.mp4"

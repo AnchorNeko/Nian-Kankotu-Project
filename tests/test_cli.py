@@ -13,13 +13,13 @@ from nian_kantoku.application.config import (
     StyleConsistencyConfig,
     StoryboardConfig,
 )
-from nian_kantoku.domain.models import GeneratedImageReference, VideoTaskStatus
+from nian_kantoku.application.run_models import GeneratedImageReference, VideoTaskStatus
 from nian_kantoku.interface import cli as cli_module
 
 
 def _build_config() -> AppConfig:
     return AppConfig(
-        architecture_contract_version="1.0.0",
+        architecture_contract_version="2.0.0",
         ark_api_key="dummy",
         models=ModelsConfig(
             storyboard_text_model="text-model",
@@ -55,6 +55,7 @@ def _build_config() -> AppConfig:
             character_designs_dir="character_designs",
             background_designs_dir="background_designs",
             storyboard_file="storyboard.json",
+            shot_diagnostics_file="shot_diagnostics.jsonl",
             keyframes_dir="keyframes",
             clips_dir="clips",
             final_video_file="final.mp4",
@@ -67,8 +68,8 @@ class _FakeStoryboardModel:
     def __init__(self) -> None:
         self.call_count = 0
 
-    def generate_storyboard(self, *, model: str, prompt: str, timeout_sec: int) -> str:
-        del model, timeout_sec, prompt
+    def generate_storyboard(self, *, model: str, prompt: str) -> str:
+        del model, prompt
         self.call_count += 1
         if self.call_count == 1:
             return json.dumps(
@@ -132,7 +133,6 @@ class _FakeImageGenerator:
         prompt: str,
         width: int,
         height: int,
-        timeout_sec: int,
         reference_images: list[str],
         seed: int | None,
         guidance_scale: float | None,
@@ -144,7 +144,6 @@ class _FakeImageGenerator:
                 "prompt": prompt,
                 "width": width,
                 "height": height,
-                "timeout_sec": timeout_sec,
                 "reference_images": reference_images,
                 "seed": seed,
                 "guidance_scale": guidance_scale,
@@ -166,20 +165,14 @@ class _PartialFailVideoGenerator:
         model: str,
         prompt: str,
         image_url: str,
-        duration_sec: float,
-        width: int,
-        height: int,
-        fps: int,
-        timeout_sec: int,
     ) -> str:
-        del model, prompt, image_url, duration_sec, width, height, fps, timeout_sec
+        del model, prompt, image_url
         task_id = f"task_{self._next}"
         self._tasks[task_id] = self._next
         self._next += 1
         return task_id
 
-    def get_video_task_status(self, *, task_id: str, timeout_sec: int) -> VideoTaskStatus:
-        del timeout_sec
+    def get_video_task_status(self, *, task_id: str) -> VideoTaskStatus:
         index = self._tasks[task_id]
         if index == 1:
             return VideoTaskStatus(
@@ -298,10 +291,13 @@ def test_cli_partial_failure_exit_and_log_artifacts(
     assert "effective_video_prompt" in run_log_text
 
     run_manifest = json.loads((output_dir / "run_manifest.json").read_text(encoding="utf-8"))
-    assert run_manifest["shot_diagnostics"]
-    assert run_manifest["shot_diagnostics"][0]["effective_image_prompt"]
-    assert run_manifest["shot_diagnostics"][0]["effective_video_prompt"]
-    assert run_manifest["shot_diagnostics"][0]["character_ids"] == ["character_001"]
+    diagnostics_file = Path(run_manifest["artifacts"]["shot_diagnostics_file"])
+    diagnostics_lines = diagnostics_file.read_text(encoding="utf-8").strip().splitlines()
+    assert diagnostics_lines
+    first_diag = json.loads(diagnostics_lines[0])
+    assert first_diag["effective_image_prompt"]
+    assert first_diag["effective_video_prompt"]
+    assert first_diag["character_ids"] == ["character_001"]
 
 
 def test_cli_reference_dir_builds_data_uri_and_passes_into_image_generation(
@@ -358,10 +354,10 @@ def test_cli_reference_dir_builds_data_uri_and_passes_into_image_generation(
     assert first_shot_call["reference_images"][0].startswith(("file://", "data:image/"))
     assert first_shot_call["seed"] == 1001
 
-    style_manifest = json.loads(
-        (output_dir / "style_anchor_manifest.json").read_text(encoding="utf-8")
-    )
-    joined_labels = " ".join(style_manifest["reference_image_inputs"])
+    run_manifest = json.loads((output_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    diagnostics_file = Path(run_manifest["artifacts"]["shot_diagnostics_file"])
+    first_diag = json.loads(diagnostics_file.read_text(encoding="utf-8").strip().splitlines()[0])
+    joined_labels = " ".join(first_diag["reference_images_used"])
     assert "character_yuko.png" in joined_labels
     assert "style_palette.jpg" in joined_labels
     assert "scene_street.webp" in joined_labels
@@ -412,7 +408,6 @@ def test_cli_missing_reference_dir_falls_back_without_error(
     shot_calls = [item for item in image_generator.calls if item["seed"] is not None]
     assert shot_calls
     assert shot_calls[0]["reference_images"]
-    # Shot references should still contain generated consistency references even when user dir is missing.
     assert all(not ref.startswith("data:image/") for ref in shot_calls[0]["reference_images"])
     run_log = (output_dir / "run.log").read_text(encoding="utf-8")
     assert "reference_dir_skipped" in run_log

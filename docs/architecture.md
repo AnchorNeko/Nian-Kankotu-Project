@@ -1,4 +1,4 @@
-# Nian Kantoku FMVP Architecture
+# Nian Kantoku FMVP Architecture (v2)
 
 ## Summary
 This project turns a user-provided plot outline into a stitched anime-style video with document-first, layered architecture:
@@ -17,7 +17,7 @@ Pipeline phases:
 ## Architecture Contract
 ```yaml
 architecture_contract:
-  version: "1.0.0"
+  version: "2.0.0"
   cli_command: "nian-kantoku run --outline-file <path> --output-dir <path> --config <path> [--reference-dir <path>] [--output-format <pretty|json>]"
   models:
     storyboard_text_model: "<config.models.storyboard_text_model>"
@@ -45,6 +45,8 @@ architecture_contract:
     shot_failure_handling: "continue_and_mark_partial_failed"
     merge_condition: "merge_only_when_all_shots_succeed"
     partial_failure_exit_code: 2
+    diagnostics_storage: "shot_diagnostics_jsonl"
+    adapter_fallback_policy: "strict_no_implicit_fallback"
     fail_fast_conditions:
       - "config_error"
       - "runtime_dependency_missing"
@@ -71,8 +73,8 @@ architecture_contract:
   - `keyframes/shot_*.png`
   - `clips/shot_*.mp4`
   - `final.mp4`
-  - `run_manifest.json`
-  - `style_anchor_manifest.json`
+  - `run_manifest.json` (summary + artifact index)
+  - `shot_diagnostics.jsonl` (one JSON record per shot)
   - `run.log`
   - `events.jsonl`
   - Terminal prompt diagnostics report (default `--output-format pretty`).
@@ -82,26 +84,13 @@ architecture_contract:
   - `character_id`, `display_name`, `identity_description`, `design_prompt`.
 - `BackgroundSpec`
   - `background_id`, `display_name`, `location_description`, `visual_constraints`, `design_prompt`.
-- `DesignAssetRecord`
-  - `asset_id`, `asset_type`, `prompt`, `image_url`, `local_path`, `status`, `error_message`.
 - `Shot`
   - `shot_id`, `duration_sec`, `story_beat`, `camera_instruction`, `image_prompt`, `video_prompt`,
     `character_ids`, `background_id`.
 - `Storyboard`
   - `shots`, `backgrounds`, `style_guide`, `total_planned_duration`.
-- `StoryboardValidationResult`
-  - `valid_shots`, `offending_shots`, `regen_round`.
-- `ShotExecutionRecord`
-  - Existing render/prompt fields plus `character_ids`, `background_id`, `consistency_references_used`.
-- `ShotDiagnosticsRecord`
-  - One record per shot regardless of success/failure.
-  - Includes storyboard/effective image prompt, storyboard/effective video prompt, key parameters,
-    character/background linkage, consistency references, generated asset paths/URLs, and failure context.
-- `ShotFailureRecord`
-  - `shot_id`, `stage`, `error_message`.
-- `RunManifest`
-  - Existing run summary fields plus `character_designs`, `background_designs`,
-    `records`, `shot_diagnostics`, `failed_records`, `merged_video_path`.
+
+Runtime and artifact DTOs live in application layer (`application/run_models.py`), not domain.
 
 ## Regeneration Workflow
 1. Build storyboard prompt with explicit requirement: every shot duration must be `<= 15` seconds.
@@ -124,12 +113,12 @@ architecture_contract:
 
 ## Video Duration Policy
 - `shot.duration_sec` is a soft target for video generation.
-- Generated clip durations are recorded in `run_manifest.json`.
+- Generated clip durations are recorded in `shot_diagnostics.jsonl`.
 - Clip duration mismatch does **not** fail the run.
 
 ## Shot Failure Policy
 - Shot-level generation errors do not stop the entire run.
-- The pipeline continues generating remaining shots and records failed shots in `run_manifest.json`.
+- The pipeline continues generating remaining shots and records failed shots in diagnostics.
 - If any shot fails, clip merging is skipped and `final.mp4` is not produced.
 - CLI exits with code `2` for partial failures after writing manifest and logs.
 
@@ -148,7 +137,12 @@ architecture_contract:
   - `seed = base_seed + shot_index`
   - `guidance_scale`
   - `optimize_prompt` (default false)
-- If image API rejects optional consistency parameters, adapter retries with progressive parameter downgrade and logs warnings.
+
+## Adapter Strictness Policy
+- Ark adapters must use strict contract parsing.
+- Do not silently fallback based on exception-text heuristics.
+- Do not use recursive deep-search extraction for task IDs / URLs.
+- If required fields are missing or invalid, fail explicitly with structured error context.
 
 ## Observability
 - Runtime emits human-readable logs to `run.log`.
@@ -162,10 +156,7 @@ architecture_contract:
 - Design-asset diagnostics must be logged:
   - Character extraction prompt/output summary.
   - Character/background design prompts, IDs, image URLs, local artifact paths, and failure context.
-- Prompt diagnostics must be logged:
-  - Effective keyframe prompt and effective storyboard-video prompt per shot.
-  - Injected character/background sheet excerpts per shot.
-  - Generated asset linkage (`keyframe_path`, `image_url`, `clip_path` when available).
+- Prompt diagnostics must be persisted per shot in `shot_diagnostics.jsonl`.
 - Terminal output defaults to a user-facing progress dashboard (not raw log lines).
   - `--output-format pretty`: live progress board during execution (Rich panel on TTY, compact progress lines on non-TTY), then concise summary + per-shot prompt/parameter details.
   - `--output-format json`: raw manifest JSON for machine-oriented workflows.
@@ -178,10 +169,15 @@ architecture_contract:
 - Consistency controls must come from config (`style_consistency.*`, `consistency_assets.*`); no hidden hardcoded behavior switches.
 - Required style consistency config keys:
   - `base_seed`, `guidance_scale`, `optimize_prompt`.
+  - `guidance_scale` may be `null`; when `null`, image requests must omit this parameter explicitly.
   - `max_reference_images_per_shot`, `carryover_prev_keyframes`.
   - `prompt_lock_preamble`, `retry_on_image_generation_error`.
+- Default image render size in `config/settings.yaml` must satisfy the configured image model's minimum pixel requirement.
 - Required consistency asset config keys:
   - `max_main_characters`, `max_backgrounds`, `max_character_refs_per_shot`, `fail_on_missing_design_assets`.
+- Required path keys:
+  - `character_sheet_file`, `background_sheet_file`, `character_designs_dir`, `background_designs_dir`.
+  - `storyboard_file`, `shot_diagnostics_file`, `keyframes_dir`, `clips_dir`, `final_video_file`, `run_manifest_file`.
 - API keys must never be hardcoded or committed.
 
 ## Testing & Quality Gates
@@ -194,7 +190,7 @@ Required test areas:
 - Character/background design asset generation orchestration and fail-fast policy.
 - Storyboard parsing and regeneration policy, including character/background linkage checks.
 - Prompt template constraints.
-- Ark adapter request shape and task polling behavior.
+- Ark adapter strict request/response contract behavior.
 - End-to-end orchestration with fake adapters.
 - Architecture document/code synchronization checks.
 
